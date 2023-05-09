@@ -1,9 +1,7 @@
 numpy
-torch>=1.2
-torchvision
 matplotlib
 tensorboard
 terminaltables
-pillow
+pillow==8.2.0
 tqdm
 imgaug

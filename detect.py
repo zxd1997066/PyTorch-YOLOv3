@@ -24,6 +24,27 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib.ticker import NullLocator
 
+
+def save_profile_result(filename, table):
+    import xlsxwriter
+    workbook = xlsxwriter.Workbook(filename)
+    worksheet = workbook.add_worksheet()
+    keys = ["Name", "Self CPU total %", "Self CPU total", "CPU total %" , "CPU total", \
+            "CPU time avg", "Number of Calls"]
+    for j in range(len(keys)):
+        worksheet.write(0, j, keys[j])
+
+    lines = table.split("\n")
+    for i in range(3, len(lines)-4):
+        words = lines[i].split(" ")
+        j = 0
+        for word in words:
+            if not word == "":
+                worksheet.write(i-2, j, word)
+                j += 1
+    workbook.close()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--image_folder", type=str, default="data/samples", help="path to dataset")
@@ -35,7 +56,16 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=1, help="size of the batches")
     parser.add_argument("--n_cpu", type=int, default=0, help="number of cpu threads to use during batch generation")
     parser.add_argument("--img_size", type=int, default=416, help="size of each image dimension")
+    parser.add_argument("--num_iter", type=int, default=400, help="Total iteration of inference.")
+    parser.add_argument("--num_warmup", type=int, default=10, help="Total iteration of warmup.")
     parser.add_argument("--checkpoint_model", type=str, help="path to checkpoint model")
+    parser.add_argument('--channels_last', type=int, default=1, help='use channels last format')
+    parser.add_argument('--arch', type=str, default="", help='model name')
+    parser.add_argument('--profile', action='store_true', help='Trigger profile on current topology.')
+    parser.add_argument('--precision', default='float32', help='Precision, "float32" or "bfloat16"')
+    parser.add_argument('--ipex', action='store_true', help='Use IPEX.')
+    parser.add_argument('--jit', action='store_true', help='Enable JIT.')
+
     opt = parser.parse_args()
     print(opt)
 
@@ -44,8 +74,7 @@ if __name__ == "__main__":
     os.makedirs("output", exist_ok=True)
 
     # Set up model
-    model = Darknet(opt.model_def, img_size=opt.img_size).to(device)
-
+    model = Darknet(opt.model_def, img_size=opt.img_size)
     if opt.weights_path.endswith(".weights"):
         # Load darknet weights
         model.load_darknet_weights(opt.weights_path)
@@ -53,7 +82,23 @@ if __name__ == "__main__":
         # Load checkpoint weights
         model.load_state_dict(torch.load(opt.weights_path))
 
+    if opt.channels_last:
+        oob_model = model
+        oob_model = oob_model.to(memory_format=torch.channels_last)
+        model = oob_model
+        print("---- Use channels last format.")
+
     model.eval()  # Set in evaluation mode
+
+    if opt.ipex:
+        import intel_extension_for_pytorch as ipex
+        print("Running with IPEX...")
+        if opt.precision == "bfloat16":
+            model = ipex.optimize(model, dtype=torch.bfloat16, inplace=True)
+        else:
+            model = ipex.optimize(model, dtype=torch.float32, inplace=True)
+    else:
+        model = model.to(device)
 
     dataloader = DataLoader(
         ImageFolder(opt.image_folder, transform= \
@@ -72,25 +117,128 @@ if __name__ == "__main__":
 
     print("\nPerforming object detection:")
     prev_time = time.time()
-    for batch_i, (img_paths, input_imgs) in enumerate(dataloader):
-        # Configure input
-        input_imgs = Variable(input_imgs.type(Tensor))
+    
+    total_time = 0
+    num_images = 0
+    batch_time_list = []
 
-        # Get detections
-        with torch.no_grad():
-            detections = model(input_imgs)
-            detections = non_max_suppression(detections, opt.conf_thres, opt.nms_thres)
+    if opt.precision == "bfloat16":
+        with torch.cpu.amp.autocast(enabled=True, dtype=torch.bfloat16):
+            for batch_i, (img_paths, input_imgs) in enumerate(dataloader):
+                # Configure input
+                input_imgs = Variable(input_imgs.type(Tensor))
+                input_imgs = input_imgs.to(device)
+                if opt.channels_last:
+                    oob_inputs = input_imgs
+                    oob_inputs = oob_inputs.contiguous(memory_format=torch.channels_last)
+                    input_imgs = oob_inputs
+                if opt.jit and batch_i == 0:
+                    try:
+                        model = torch.jit.trace(model, input_imgs, check_trace=False)
+                        print("---- Use trace model.")
+                    except:
+                        model = torch.jit.script(model)
+                        print("---- Use script model.")
+                    if opt.ipex:
+                        model = torch.jit.freeze(model)
+                for i in range(opt.num_iter):
+                    # Get detections
+                    tic = time.time()
+                    if opt.profile:
+                        with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU], record_shapes=True) as prof:
+                            with torch.no_grad():
+                                detections = model(input_imgs)
+                                detections = non_max_suppression(detections, opt.conf_thres, opt.nms_thres)
+                        #
+                        if i == int(opt.num_iter/2):
+                            import pathlib
+                            timeline_dir = str(pathlib.Path.cwd()) + '/timeline/'
+                            if not os.path.exists(timeline_dir):
+                                os.makedirs(timeline_dir)
+                            timeline_file = timeline_dir + 'timeline-' + str(torch.backends.quantized.engine) + '-' + \
+                                        opt.arch + str(i) + '-' + str(os.getpid()) + '.json'
+                            print(timeline_file)
+                            prof.export_chrome_trace(timeline_file)
+                            table_res = prof.key_averages().table(sort_by="cpu_time_total")
+                            print(table_res)
+                            # self.save_profile_result(timeline_dir + torch.backends.quantized.engine + "_result_average.xlsx", table_res)
+                    else:
+                        with torch.no_grad():
+                            detections = model(input_imgs)
+                            detections = non_max_suppression(detections, opt.conf_thres, opt.nms_thres)
+                    toc = time.time()
+                    print("Iteration: {}, inference time: {} sec.".format(i, toc - tic), flush=True)
+                    if i >= opt.num_warmup:
+                        total_time += toc - tic
+                        num_images += opt.batch_size
+                        batch_time_list.append((toc - tic) * 1000)
+                break
+    else:
+        for batch_i, (img_paths, input_imgs) in enumerate(dataloader):
+            # Configure input
+            input_imgs = Variable(input_imgs.type(Tensor))
+            input_imgs = input_imgs.to(device)
+            if opt.channels_last:
+                oob_inputs = input_imgs
+                oob_inputs = oob_inputs.contiguous(memory_format=torch.channels_last)
+                input_imgs = oob_inputs
+            if opt.jit and batch_i == 0:
+                try:
+                    model = torch.jit.trace(model, input_imgs, check_trace=False)
+                    print("---- Use trace model.")
+                except:
+                    model = torch.jit.script(model)
+                    print("---- Use script model.")
+                if opt.ipex:
+                    model = torch.jit.freeze(model)
+            for i in range(opt.num_iter):
+                # Get detections
+                tic = time.time()
+                if opt.profile:
+                    with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU], record_shapes=True) as prof:
+                        with torch.no_grad():
+                            detections = model(input_imgs)
+                            detections = non_max_suppression(detections, opt.conf_thres, opt.nms_thres)
+                    #
+                    if i == int(opt.num_iter/2):
+                        import pathlib
+                        timeline_dir = str(pathlib.Path.cwd()) + '/timeline/'
+                        if not os.path.exists(timeline_dir):
+                            os.makedirs(timeline_dir)
+                        timeline_file = timeline_dir + 'timeline-' + str(torch.backends.quantized.engine) + '-' + \
+                                    opt.arch + str(i) + '-' + str(os.getpid()) + '.json'
+                        print(timeline_file)
+                        prof.export_chrome_trace(timeline_file)
+                        table_res = prof.key_averages().table(sort_by="cpu_time_total")
+                        print(table_res)
+                        # self.save_profile_result(timeline_dir + torch.backends.quantized.engine + "_result_average.xlsx", table_res)
+                else:
+                    with torch.no_grad():
+                        detections = model(input_imgs)
+                        detections = non_max_suppression(detections, opt.conf_thres, opt.nms_thres)
 
-        # Log progress
-        current_time = time.time()
-        inference_time = datetime.timedelta(seconds=current_time - prev_time)
-        prev_time = current_time
-        print("\t+ Batch %d, Inference Time: %s" % (batch_i, inference_time))
+                toc = time.time()
+                print("Iteration: {}, inference time: {} sec.".format(i, toc - tic), flush=True)
+                if i >= opt.num_warmup:
+                    total_time += toc - tic
+                    num_images += opt.batch_size
+                    batch_time_list.append((toc - tic) * 1000)
+            break
 
-        # Save image and detections
-        imgs.extend(img_paths)
-        img_detections.extend(detections)
+    print("\n", "-"*20, "Summary", "-"*20)
+    latency = total_time / num_images * 1000
+    throughput = num_images / total_time
+    print("inference latency:\t {:.3f} ms".format(latency))
+    print("inference Throughput:\t {:.2f} samples/s".format(throughput))
+    # P50
+    batch_time_list.sort()
+    p50_latency = batch_time_list[int(len(batch_time_list) * 0.50) - 1]
+    p90_latency = batch_time_list[int(len(batch_time_list) * 0.90) - 1]
+    p99_latency = batch_time_list[int(len(batch_time_list) * 0.99) - 1]
+    print('Latency P50:\t %.3f ms\nLatency P90:\t %.3f ms\nLatency P99:\t %.3f ms\n'\
+            % (p50_latency, p90_latency, p99_latency))
 
+    '''
     # Bounding-box colors
     cmap = plt.get_cmap("tab20b")
     colors = [cmap(i) for i in np.linspace(0, 1, 20)]
@@ -144,3 +292,4 @@ if __name__ == "__main__":
         output_path = os.path.join("output", f"{filename}.png")
         plt.savefig(output_path, bbox_inches="tight", pad_inches=0.0)
         plt.close()
+        '''
