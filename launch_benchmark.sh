@@ -28,10 +28,10 @@ function main {
     do
         #
         if [ "${model_name}" == "YoloV3" ];then
-            model_weight="${CKPT_DIR}/models/yolov3.weights"
+            model_weight=${CKPT_DIR}/models/yolov3.weights
             model_config="./config/yolov3.cfg"
         elif [ "${model_name}" == "YoloV3-tiny" ];then
-            model_weight="${CKPT_DIR}/models/yolov3-tiny.weights"
+            model_weight=${CKPT_DIR}/models/yolov3-tiny.weights
             model_config="./config/yolov3-tiny.cfg"
         fi
         # pre run
