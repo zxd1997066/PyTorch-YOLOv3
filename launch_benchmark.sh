@@ -1,4 +1,4 @@
-et -xe
+set -xe
 
 model_name=$(echo $@ |sed 's/.*--model_name.//;s/ *--.*//')
 

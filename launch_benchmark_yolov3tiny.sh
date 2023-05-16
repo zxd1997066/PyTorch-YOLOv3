@@ -7,6 +7,7 @@ function prepare_workload {
     workload_dir="${PWD}"
     # set common info
     source oob-common/common.sh
+    echo $@
     init_params $@
     fetch_device_info
     set_environment
