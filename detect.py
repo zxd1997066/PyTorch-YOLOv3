@@ -173,6 +173,57 @@ if __name__ == "__main__":
                         num_images += opt.batch_size
                         batch_time_list.append((toc - tic) * 1000)
                 break
+    elif opt.precision == "float16":
+        with torch.cpu.amp.autocast(enabled=True, dtype=torch.half):
+            for batch_i, (img_paths, input_imgs) in enumerate(dataloader):
+                # Configure input
+                input_imgs = Variable(input_imgs.type(Tensor))
+                input_imgs = input_imgs.to(device)
+                if opt.channels_last:
+                    oob_inputs = input_imgs
+                    oob_inputs = oob_inputs.contiguous(memory_format=torch.channels_last)
+                    input_imgs = oob_inputs
+                if opt.jit and batch_i == 0:
+                    try:
+                        model = torch.jit.trace(model, input_imgs, check_trace=False)
+                        print("---- Use trace model.")
+                    except:
+                        model = torch.jit.script(model)
+                        print("---- Use script model.")
+                    if opt.ipex:
+                        model = torch.jit.freeze(model)
+                for i in range(opt.num_iter):
+                    # Get detections
+                    tic = time.time()
+                    if opt.profile:
+                        with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU], record_shapes=True) as prof:
+                            with torch.no_grad():
+                                detections = model(input_imgs)
+                                detections = non_max_suppression(detections, opt.conf_thres, opt.nms_thres)
+                        #
+                        if i == int(opt.num_iter/2):
+                            import pathlib
+                            timeline_dir = str(pathlib.Path.cwd()) + '/timeline/'
+                            if not os.path.exists(timeline_dir):
+                                os.makedirs(timeline_dir)
+                            timeline_file = timeline_dir + 'timeline-' + str(torch.backends.quantized.engine) + '-' + \
+                                        opt.arch + str(i) + '-' + str(os.getpid()) + '.json'
+                            print(timeline_file)
+                            prof.export_chrome_trace(timeline_file)
+                            table_res = prof.key_averages().table(sort_by="cpu_time_total")
+                            print(table_res)
+                            # self.save_profile_result(timeline_dir + torch.backends.quantized.engine + "_result_average.xlsx", table_res)
+                    else:
+                        with torch.no_grad():
+                            detections = model(input_imgs)
+                            detections = non_max_suppression(detections, opt.conf_thres, opt.nms_thres)
+                    toc = time.time()
+                    print("Iteration: {}, inference time: {} sec.".format(i, toc - tic), flush=True)
+                    if i >= opt.num_warmup:
+                        total_time += toc - tic
+                        num_images += opt.batch_size
+                        batch_time_list.append((toc - tic) * 1000)
+                break
     else:
         for batch_i, (img_paths, input_imgs) in enumerate(dataloader):
             # Configure input
