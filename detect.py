@@ -65,6 +65,10 @@ if __name__ == "__main__":
     parser.add_argument('--precision', default='float32', help='Precision, "float32" or "bfloat16"')
     parser.add_argument('--ipex', action='store_true', help='Use IPEX.')
     parser.add_argument('--jit', action='store_true', help='Enable JIT.')
+    parser.add_argument("--compile", action='store_true', default=False,
+                    help="enable torch.compile")
+    parser.add_argument("--backend", type=str, default='inductor',
+                    help="enable torch.compile backend")
 
     opt = parser.parse_args()
     print(opt)
@@ -121,6 +125,8 @@ if __name__ == "__main__":
     total_time = 0
     num_images = 0
     batch_time_list = []
+    if opt.compile:
+        model = torch.compile(model, backend=opt.backend, options={"freezing": True})
 
     if opt.precision == "bfloat16":
         with torch.cpu.amp.autocast(enabled=True, dtype=torch.bfloat16):
