@@ -129,7 +129,7 @@ if __name__ == "__main__":
         model = torch.compile(model, backend=opt.backend, options={"freezing": True})
 
     if opt.precision == "bfloat16":
-        with torch.cpu.amp.autocast(enabled=True, dtype=torch.bfloat16):
+        with torch.autocast(device_type="cuda" if torch.cuda.is_available() else "cpu", enabled=True, dtype=torch.bfloat16):
             for batch_i, (img_paths, input_imgs) in enumerate(dataloader):
                 # Configure input
                 input_imgs = Variable(input_imgs.type(Tensor))
@@ -180,7 +180,7 @@ if __name__ == "__main__":
                         batch_time_list.append((toc - tic) * 1000)
                 break
     elif opt.precision == "float16":
-        with torch.cpu.amp.autocast(enabled=True, dtype=torch.half):
+        with torch.autocast(device_type="cuda" if torch.cuda.is_available() else "cpu", enabled=True, dtype=torch.half):
             for batch_i, (img_paths, input_imgs) in enumerate(dataloader):
                 # Configure input
                 input_imgs = Variable(input_imgs.type(Tensor))
