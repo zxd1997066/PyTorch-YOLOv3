@@ -14,7 +14,7 @@ function prepare_workload {
 
     pip install -r ${workload_dir}/requirements.txt
     if [ "${device}" == "cuda" ];then
-        pip install opencv-python==4.8.0.74
+        pip install opencv-python==4.8.0.74 opencv-python-headless==4.8.0.74
     fi
     # pip install --no-deps torchvision -f https://download.pytorch.org/whl/torch_stable.html
 }
