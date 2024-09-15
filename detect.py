@@ -69,6 +69,8 @@ if __name__ == "__main__":
                     help="enable torch.compile")
     parser.add_argument("--backend", type=str, default='inductor',
                     help="enable torch.compile backend")
+    parser.add_argument("--triton_cpu", action='store_true', default=False,
+                    help="enable triton_cpu")
 
     opt = parser.parse_args()
     print(opt)
@@ -76,7 +78,10 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     os.makedirs("output", exist_ok=True)
-
+    if opt.triton_cpu:
+        print("run with triton cpu backend")
+        import torch._inductor.config
+        torch._inductor.config.cpu_backend="triton"
     # Set up model
     model = Darknet(opt.model_def, img_size=opt.img_size)
     if opt.weights_path.endswith(".weights"):
