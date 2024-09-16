@@ -2,6 +2,6 @@ numpy
 matplotlib
 tensorboard
 terminaltables
-pillow==8.2.0
+pillow
 tqdm
 imgaug
